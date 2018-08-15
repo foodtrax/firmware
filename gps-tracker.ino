@@ -112,8 +112,7 @@ int gpsPublishIfMoved(String command) {
             float changeLon = abs(previousLon - thisLon);
             float changeLat = abs(previousLat - thisLat);
             
-            // In our testing, drift seems to be about a few ten-thousandths of a degree. If movement
-            // Is greater than one thousandth of a degree, update.
+            // In our testing, drift seems to be about a few ten-thousandths of a degree.
             if (!previousCoordinatesSet || (changeLon > 0.0005 || changeLat > 0.0005)) {
                 
                 // Update our records.
