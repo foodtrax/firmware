@@ -21,7 +21,7 @@ int transmittingData = 1;
 long lastPublish = 0;
 
 // How many minutes between publishes? 10+ recommended for long-time continuous publishing!
-int delayMinutes = 1;
+int delayMinutes = 5;
 
 // Creating an AssetTracker named 't' for us to reference
 AssetTracker t = AssetTracker();
@@ -114,7 +114,7 @@ int gpsPublishIfMoved(String command) {
             
             // In our testing, drift seems to be about a few ten-thousandths of a degree. If movement
             // Is greater than one thousandth of a degree, update.
-            if (!previousCoordinatesSet || (changeLon > 0.001 || changeLat > 0.001)) {
+            if (!previousCoordinatesSet || (changeLon > 0.0005 || changeLat > 0.0005)) {
                 
                 // Update our records.
                 previousLon = thisLon;
@@ -157,4 +157,3 @@ int batteryStatus(String command){
     // if you're running out of battery, return 0
     else { return 0;}
 }
-
