@@ -21,7 +21,7 @@ int transmittingData = 1;
 long lastPublish = 0;
 
 // How many minutes between publishes? 10+ recommended for long-time continuous publishing!
-int delayMinutes = 10;
+int delayMinutes = 1;
 
 // Creating an AssetTracker named 't' for us to reference
 AssetTracker t = AssetTracker();
@@ -34,9 +34,15 @@ bool previousCoordinatesSet = false;
 float previousLon = 0;
 float previousLat = 0;
 
+// Threshold to ignore updates (knowing when food trucks are on the move isn't very helpful)
+// 9000 is VERY sensitive, 12000 will still detect small bumps.
+// We want to know when it's driving.
+int accelThreshold = 16000;
+
 // setup() and loop() are both required. setup() runs once when the device starts
 // and is used for registering functions and variables and initializing things
 void setup() {
+
     // Sets up all the necessary AssetTracker bits
     t.begin();
 
@@ -56,52 +62,14 @@ void setup() {
 
 // loop() runs continuously
 void loop() {
-    // You'll need to run this every loop to capture the GPS output
+    // Must be run to capture the GPS output.
     t.updateGPS();
-
     // if the current time - the last time we published is greater than your set delay...
     if (millis()-lastPublish > delayMinutes*60*1000) {
         // Remember when we published
         lastPublish = millis();
 
-        //String pubAccel = String::format("%d,%d,%d", t.readX(), t.readY(), t.readZ());
-        //Serial.println(pubAccel);
-        //Particle.publish("A", pubAccel, 60, PRIVATE);
-
-        // Dumps the full NMEA sentence to serial in case you're curious
-        //Serial.println(t.preNMEA());
-
-        // GPS requires a "fix" on the satellites to give good data,
-        // so we should only publish data if there's a fix
-        if (t.gpsFix()) {
-            
-            // See if we moved enough to report it. Make the reasonable assumption that the earth is flat.
-            float thisLon = t.readLon();
-            float thisLat = t.readLat();
-            
-            float changeLon = previousLon - thisLon;
-            float changeLat = previousLat - thisLat;
-            
-            // In our testing, drift seems to be about a few ten-thousandths of a degree. If movement
-            // Is greater than one thousandth of a degree, update.
-            if (!previousCoordinatesSet || (changeLon > 0.001 || changeLat > 0.001)) {
-                
-                // Update our records.
-                previousLon = thisLon;
-                previousLat = thisLat;
-                previousCoordinatesSet = true;
-                
-                // Only publish if we're in transmittingData mode 1;
-                if (transmittingData) {
-                    // Short publish names save data!
-                    Particle.publish("G", t.readLatLon(), 60, PRIVATE);
-                }
-            } else {
-                //Serial.println("Not enough change, not transmitting.");
-            }
-            // but always report the data over serial for local development
-            //Serial.println(t.readLatLon());
-        }
+        gpsPublishIfMoved("");
     }
 }
 
@@ -117,10 +85,11 @@ int transmitMode(String command) {
 // a GPS fix, otherwise returns '0'
 int gpsPublish(String command) {
     if (t.gpsFix()) {
+        previousLon = t.readLon();
+        previousLat = t.readLat();
+        previousCoordinatesSet = true;
+        
         Particle.publish("G", t.readLatLon(), 60, PRIVATE);
-
-        // uncomment next line if you want a manual publish to reset delay counter
-        // lastPublish = millis();
         return 1;
     } else {
       return 0;
@@ -129,36 +98,42 @@ int gpsPublish(String command) {
 
 // Same as gpsPublish, but only publishes if we've moved enough.
 int gpsPublishIfMoved(String command) {
+
     if (t.gpsFix()) {
             
-        // See if we moved enough to report it. Make the reasonable assumption that the earth is flat.
-        float thisLon = t.readLon();
-        float thisLat = t.readLat();
+        // If the truck is moving too fast, ignore it
+        if (t.readXYZmagnitude() < accelThreshold) {
         
-        float changeLon = previousLon - thisLon;
-        float changeLat = previousLat - thisLat;
-        
-        // In our testing, drift seems to be about a few ten-thousandths of a degree. If movement
-        // Is greater than one thousandth of a degree, update.
-        if (!previousCoordinatesSet || (changeLon > 0.001 || changeLat > 0.001)) {
+            // See if we've moved enough since last time to report.
+            // Make the reasonable assumption that the earth is flat.
+            float thisLon = t.readLon();
+            float thisLat = t.readLat();
             
-            // Update our records.
-            previousLon = thisLon;
-            previousLat = thisLat;
-            previousCoordinatesSet = true;
+            float changeLon = abs(previousLon - thisLon);
+            float changeLat = abs(previousLat - thisLat);
             
-            // Only publish if we're in transmittingData mode 1;
-            if (transmittingData) {
-                // Short publish names save data!
-                Particle.publish("G", t.readLatLon(), 60, PRIVATE);
-                return 1;
+            // In our testing, drift seems to be about a few ten-thousandths of a degree. If movement
+            // Is greater than one thousandth of a degree, update.
+            if (!previousCoordinatesSet || (changeLon > 0.001 || changeLat > 0.001)) {
+                
+                // Update our records.
+                previousLon = thisLon;
+                previousLat = thisLat;
+                previousCoordinatesSet = true;
+                
+                // Only publish if we're in transmittingData mode 1;
+                if (transmittingData) {
+                    // Short publish names save data!
+                    Particle.publish("G", t.readLatLon(), 60, PRIVATE);
+                    return 1;
+                } else {
+                    //Serial.println("Not transmitting. We would have though!");
+                    return 3;
+                }
             } else {
-                //Serial.println("Not transmitting. We would have though!");
-                return 3;
+                //Serial.println("Not enough change, not transmitting.");
+                return 2;
             }
-        } else {
-            //Serial.println("Not enough change, not transmitting.");
-            return 2;
         }
     }
     return 0;
