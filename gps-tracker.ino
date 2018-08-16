@@ -19,6 +19,9 @@ int delayMinutes = 2;
 // How many minutes between heartbeats? The backend expects every 10 minutes.
 int delayHeartbeatMinutes = 7;
 
+// Acceptable drift, in degrees. If change doesn't exceed this, the truck is stationary.
+float acceptableDrift = 0.0005;
+
 // GPS coordinates from the last publish. Don't send anything new if we haven't moved much
 bool previousCoordinatesSet = false;
 float previousLon = 0;
@@ -127,7 +130,7 @@ int gpsPublishIfMoved(String command) {
     Serial.println(String::format("changeLon %f",changeLon));
     Serial.println(String::format("changeLat %f",changeLat));
     
-    if (changeLon > 0.001 || changeLat > 0.001) {
+    if (changeLon > acceptableDrift || changeLat > acceptableDrift) {
         
         // Update our records.
         previousLon = thisLon;
