@@ -1,43 +1,37 @@
 /* -----------------------------------------------------------
-This checks for a good GPS fix every 10 minutes, and publishes that
-data if it is one, and the data is different enough from the
-preivously published data. If not, it will save data by staying quiet.
-
-It also registers some Particle.functions for changing whether it
-publishes, reading the battery level, and manually requesting GPS
-readings.
+This checks for a good GPS fix every few minutes, and publishes
+data/state information if necessary. If not, it will save data
+by staying quiet.
 ---------------------------------------------------------------*/
 
 // Getting the library
 #include "AssetTracker.h"
 
-// Set whether you want the device to publish data to the internet by default here.
-// 1 will Particle.publish AND Serial.print, 0 will just Serial.print
-// Extremely useful for saving data while developing close enough to have a cable plugged in.
-// You can also change this remotely using the Particle.function "tmode" defined in setup()
-int transmittingData = 1;
-
-// Used to keep track of the last time we published data
+// Keep track of the last time we published data
 long lastPublish = 0;
 
-// How many minutes between publishes? 10+ recommended for long-time continuous publishing!
-int delayMinutes = 5;
+// Keep track of the last time we checked our environment
+long lastPublishCheck = 0;
 
-// Creating an AssetTracker named 't' for us to reference
-AssetTracker t = AssetTracker();
+// How many minutes between checks?
+int delayMinutes = 2;
 
-// A FuelGauge named 'fuel' for checking on the battery state
-FuelGauge fuel;
+// How many minutes between heartbeats? The backend expects every 10 minutes.
+int delayHeartbeatMinutes = 7;
 
 // GPS coordinates from the last publish. Don't send anything new if we haven't moved much
 bool previousCoordinatesSet = false;
 float previousLon = 0;
 float previousLat = 0;
 
-// Threshold to ignore updates (knowing when food trucks are on the move isn't very helpful)
-// 9000 is VERY sensitive, 12000 will still detect small bumps.
-// We want to know when it's driving.
-int accelThreshold = 16000;
+// What did we last send?
+String lastPublishType = "F";   // Press F to pay respects
+
+// Creating an AssetTracker named 't' for us to reference
+AssetTracker t = AssetTracker();
+
+// A FuelGauge named 'fuel' for checking on the battery state
+FuelGauge fuel;
 
 // setup() and loop() are both required. setup() runs once when the device starts
 // and is used for registering functions and variables and initializing things
@@ -51,13 +45,14 @@ void setup() {
     t.gpsOn();
 
     // Opens up a Serial port so you can listen over USB
-    //Serial.begin(9600);
+    Serial.begin(9600);
 
-    // These three functions are useful for remote diagnostics. Read more below.
-    Particle.function("tmode", transmitMode);
     Particle.function("batt", batteryStatus);
     Particle.function("gps", gpsPublish);
     Particle.function("gpsIfMoved", gpsPublishIfMoved);
+    
+    // For debugging
+    Particle.variable("lastPubType", lastPublishType);
 }
 
 // loop() runs continuously
@@ -65,20 +60,12 @@ void loop() {
     // Must be run to capture the GPS output.
     t.updateGPS();
     // if the current time - the last time we published is greater than your set delay...
-    if (millis()-lastPublish > delayMinutes*60*1000) {
+    if (millis()-lastPublishCheck > delayMinutes*60*1000) {
         // Remember when we published
-        lastPublish = millis();
+        lastPublishCheck = millis();
 
         gpsPublishIfMoved("");
     }
-}
-
-// Allows you to remotely change whether a device is publishing to the cloud
-// or is only reporting data over Serial. Saves data when using only Serial!
-// Change the default at the top of the code.
-int transmitMode(String command) {
-    transmittingData = atoi(command);
-    return 1;
 }
 
 // Actively ask for a GPS reading if you're impatient. Only publishes if there's
@@ -96,46 +83,80 @@ int gpsPublish(String command) {
     }
 }
 
-// Same as gpsPublish, but only publishes if we've moved enough.
+// Publishes different states if different consitions are met.
+// Return codes:
+//   0 = We were online, and continue to be. 
+//       Sent a heartbeat.
+//   1 = We were online, and continue to be, but recently published. 
+//       Nothing was done.
+//   2 = We were online, then we moved.
+//       Sent an offline.
+//   3 = We were offline, but stationary.
+//       Sent coordinates.
+//   4 = We were offline, and moved.
+//       Nothing was done.
+//   5 = No GPS Fix.
+//       Nothing was done.
 int gpsPublishIfMoved(String command) {
 
-    if (t.gpsFix()) {
-            
-        // If the truck is moving too fast, ignore it
-        if (t.readXYZmagnitude() < accelThreshold) {
-        
-            // See if we've moved enough since last time to report.
-            // Make the reasonable assumption that the earth is flat.
-            float thisLon = t.readLon();
-            float thisLat = t.readLat();
-            
-            float changeLon = abs(previousLon - thisLon);
-            float changeLat = abs(previousLat - thisLat);
-            
-            // In our testing, drift seems to be about a few ten-thousandths of a degree.
-            if (!previousCoordinatesSet || (changeLon > 0.0005 || changeLat > 0.0005)) {
-                
-                // Update our records.
-                previousLon = thisLon;
-                previousLat = thisLat;
-                previousCoordinatesSet = true;
-                
-                // Only publish if we're in transmittingData mode 1;
-                if (transmittingData) {
-                    // Short publish names save data!
-                    Particle.publish("G", t.readLatLon(), 60, PRIVATE);
-                    return 1;
-                } else {
-                    //Serial.println("Not transmitting. We would have though!");
-                    return 3;
-                }
-            } else {
-                //Serial.println("Not enough change, not transmitting.");
-                return 2;
-            }
-        }
+    // No GPS fix, no good data.
+    if (!t.gpsFix()) {
+        return 5;
     }
-    return 0;
+
+    if (!previousCoordinatesSet) {
+        // Our first update! Hopefully the first of many.
+        previousLon = t.readLonDeg();
+        previousLat = t.readLatDeg();
+        Serial.println(String::format("previousLon %f",previousLon));
+        Serial.println(String::format("previousLat %f",previousLat));
+        previousCoordinatesSet = true;
+    }
+
+    // How far have we moved since we last checked?
+    // Make the reasonable assumption that the earth is flat.
+    float thisLon = t.readLonDeg();
+    float thisLat = t.readLatDeg();
+    
+    float changeLon = f_abs(previousLon - thisLon);
+    float changeLat = f_abs(previousLat - thisLat);
+    Serial.println(String::format("previousLon %f",previousLon));
+    Serial.println(String::format("previousLat %f",previousLat));
+    Serial.println(String::format("thisLon %f",thisLon));
+    Serial.println(String::format("thisLat %f",thisLat));
+    Serial.println(String::format("changeLon %f",changeLon));
+    Serial.println(String::format("changeLat %f",changeLat));
+    
+    if (changeLon > 0.001 || changeLat > 0.001) {
+        
+        // Update our records.
+        previousLon = thisLon;
+        previousLat = thisLat;
+        
+        if (lastPublishType != "F") {
+            Particle.publish("F", "", 60, PRIVATE);
+            lastPublishType = "F";
+            lastPublish = millis();
+            return 2;
+        }
+    
+        return 4;
+    }
+
+    if (lastPublishType == "F") {
+        Particle.publish("G", t.readLatLon(), 60, PRIVATE);
+        lastPublishType = "G";
+        lastPublish = millis();
+        return 3;
+    }
+    
+    if (millis()-lastPublish > delayHeartbeatMinutes*60*1000) {
+        Particle.publish("H", "", 60, PRIVATE);
+        lastPublishType = "H";
+        lastPublish = millis();
+        return 0;
+    }
+    return 1;
 }
 
 // Lets you remotely check the battery status by calling the function "batt"
@@ -155,4 +176,11 @@ int batteryStatus(String command){
     if (fuel.getSoC()>10){ return 1;}
     // if you're running out of battery, return 0
     else { return 0;}
+}
+
+float f_abs(float f) {
+    if (f < 0) {
+        return -1 * f;
+    }
+    return f;
 }
